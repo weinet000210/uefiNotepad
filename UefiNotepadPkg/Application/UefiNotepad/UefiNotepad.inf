@@ -1,0 +1,55 @@
+## @file
+#  uefiNotepad - Notepad-style graphical text editor for the UEFI Shell.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = uefinotepad
+  FILE_GUID                      = 9C4D2A71-5E3B-4F86-A1C9-7D2E8B4F6A15
+  MODULE_TYPE                    = UEFI_APPLICATION
+  VERSION_STRING                 = 0.1
+  ENTRY_POINT                    = UefiMain
+
+[Sources]
+  Notepad.h
+  Main.c
+  Gfx.c
+  Font.c
+  Input.c
+  Doc.c
+  Editor.c
+  View.c
+  Dialog.c
+  FileIo.c
+  FileDlg.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  UefiApplicationEntryPoint
+  UefiBootServicesTableLib
+  UefiRuntimeServicesTableLib
+  UefiLib
+  BaseLib
+  BaseMemoryLib
+  MemoryAllocationLib
+  PrintLib
+  DebugLib
+
+[Protocols]
+  gEfiGraphicsOutputProtocolGuid                ## CONSUMES
+  gEfiSimpleTextInputExProtocolGuid             ## SOMETIMES_CONSUMES
+  gEfiSimplePointerProtocolGuid                 ## SOMETIMES_CONSUMES
+  gEfiAbsolutePointerProtocolGuid               ## SOMETIMES_CONSUMES
+  gEfiShellProtocolGuid                         ## SOMETIMES_CONSUMES
+  gEfiShellParametersProtocolGuid               ## SOMETIMES_CONSUMES
+  gEfiLoadedImageProtocolGuid                   ## SOMETIMES_CONSUMES
+  gEfiSimpleFileSystemProtocolGuid              ## SOMETIMES_CONSUMES
+  gEfiDevicePathProtocolGuid                    ## SOMETIMES_CONSUMES
+
+[Guids]
+  gEfiFileInfoGuid                              ## SOMETIMES_CONSUMES
+  gEfiFileSystemInfoGuid                        ## SOMETIMES_CONSUMES
