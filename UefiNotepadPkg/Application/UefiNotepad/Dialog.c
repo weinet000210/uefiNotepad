@@ -10,20 +10,10 @@
 #define DLG_TITLE_H   26
 #define DLG_BTN_W     96
 #define DLG_BTN_H     26
-#define DLG_FIELD_H   24
 #define DLG_MAX_FIELD 2
 #define DLG_MAX_BTN   3
 #define DLG_MAX_LINES 24
 
-typedef struct {
-  CONST CHAR16  *Label;
-  CHAR16        *Buf;
-  UINTN         BufLen;
-  UINTN         Cursor;
-  UINTN         Scroll;
-  BOOLEAN       Numeric;
-  BOOLEAN       AllSel;         // whole text selected; typing replaces it
-} DLG_FIELD;
 
 typedef struct {
   CONST CHAR16  *Title;
@@ -127,19 +117,56 @@ ButtonRect (
   *Y    = D->Y + D->H - DLG_BTN_H - 11;
 }
 
+VOID
+DlgFieldDraw (
+  DLG_FIELD  *F,
+  INTN       Fx,
+  INTN       Fy,
+  INTN       Fw,
+  BOOLEAN    Focused
+  )
+{
+  UINTN  Visible;
+  INTN   Cx;
+
+  GfxFillRect (Fx, Fy, Fw, DLG_FIELD_H, C_WINDOW);
+  GfxFrameRect (Fx, Fy, Fw, DLG_FIELD_H, Focused ? C_HILITE : 0x7A7A7A);
+
+  Visible = (UINTN)(Fw - 10) / FONT_W;
+  if (F->Cursor < F->Scroll) {
+    F->Scroll = F->Cursor;
+  } else if (F->Cursor > F->Scroll + Visible) {
+    F->Scroll = F->Cursor - Visible;
+  }
+
+  GfxSetClip (Fx + 2, Fy + 2, Fx + Fw - 2, Fy + DLG_FIELD_H - 2);
+  if (F->AllSel && Focused && (F->Buf[0] != 0)) {
+    GfxFillRect (Fx + 5, Fy + 3, (INTN)(StrLen (F->Buf) - F->Scroll) * FONT_W, DLG_FIELD_H - 6, C_HILITE);
+    GfxDrawText (Fx + 5, Fy + (DLG_FIELD_H - FONT_H) / 2, F->Buf + F->Scroll, C_HILITE_FG);
+  } else {
+    GfxDrawText (Fx + 5, Fy + (DLG_FIELD_H - FONT_H) / 2, F->Buf + F->Scroll, C_TEXT);
+  }
+
+  if (Focused && gEd.CaretOn) {
+    Cx = Fx + 5 + (INTN)(F->Cursor - F->Scroll) * FONT_W;
+    GfxFillRect (Cx, Fy + 3, 1, DLG_FIELD_H - 6, 0x000000);
+  }
+
+  GfxResetClip ();
+}
+
 STATIC
 VOID
 DlgDraw (
   DLG  *D
   )
 {
-  UINTN         I, Line, Visible;
+  UINTN         I, Line;
   INTN          Fx, Fy, Fw, Bx, By, Ty;
   CONST CHAR16  *S;
   CONST CHAR16  *Start;
   BOOLEAN       Focused;
   DLG_FIELD     *F;
-  INTN          Cx;
 
   GfxFillRect (D->X + 4, D->Y + 4, D->W, D->H, 0x808080);
   GfxFillRect (D->X, D->Y, D->W, D->H, C_WINDOW);
@@ -177,30 +204,7 @@ DlgDraw (
     Focused = (D->Focus == I);
     FieldRect (D, I, &Fx, &Fy, &Fw);
     GfxDrawText (D->X + 20, Fy + (DLG_FIELD_H - FONT_H) / 2, F->Label, C_TEXT);
-    GfxFillRect (Fx, Fy, Fw, DLG_FIELD_H, C_WINDOW);
-    GfxFrameRect (Fx, Fy, Fw, DLG_FIELD_H, Focused ? C_HILITE : 0x7A7A7A);
-
-    Visible = (UINTN)(Fw - 10) / FONT_W;
-    if (F->Cursor < F->Scroll) {
-      F->Scroll = F->Cursor;
-    } else if (F->Cursor > F->Scroll + Visible) {
-      F->Scroll = F->Cursor - Visible;
-    }
-
-    GfxSetClip (Fx + 2, Fy + 2, Fx + Fw - 2, Fy + DLG_FIELD_H - 2);
-    if (F->AllSel && Focused && (F->Buf[0] != 0)) {
-      GfxFillRect (Fx + 5, Fy + 3, (INTN)(StrLen (F->Buf) - F->Scroll) * FONT_W, DLG_FIELD_H - 6, C_HILITE);
-      GfxDrawText (Fx + 5, Fy + (DLG_FIELD_H - FONT_H) / 2, F->Buf + F->Scroll, C_HILITE_FG);
-    } else {
-      GfxDrawText (Fx + 5, Fy + (DLG_FIELD_H - FONT_H) / 2, F->Buf + F->Scroll, C_TEXT);
-    }
-
-    if (Focused && gEd.CaretOn) {
-      Cx = Fx + 5 + (INTN)(F->Cursor - F->Scroll) * FONT_W;
-      GfxFillRect (Cx, Fy + 3, 1, DLG_FIELD_H - 6, 0x000000);
-    }
-
-    GfxResetClip ();
+    DlgFieldDraw (F, Fx, Fy, Fw, Focused);
   }
 
   //
@@ -240,9 +244,8 @@ DlgPresent (
   GfxPresent ();
 }
 
-STATIC
 BOOLEAN
-FieldKey (
+DlgFieldKey (
   DLG_FIELD    *F,
   INPUT_EVENT  *Ev
   )
@@ -367,6 +370,7 @@ DlgRun (
   SavedMenu    = gEd.OpenMenu;
   gEd.OpenMenu = -1;
   D->Pressed   = -1;
+  gModal++;
   Total        = D->FieldCount + D->ButtonCount;
   for (I = 0; I < D->FieldCount; I++) {
     D->Fields[I].Cursor = StrLen (D->Fields[I].Buf);
@@ -420,7 +424,7 @@ DlgRun (
       }
 
       if (D->Focus < D->FieldCount) {
-        FieldKey (&D->Fields[D->Focus], &Ev);
+        DlgFieldKey (&D->Fields[D->Focus], &Ev);
       } else if (Ev.Scan == SCAN_LEFT) {
         if (D->Focus > D->FieldCount) {
           D->Focus--;
@@ -502,6 +506,7 @@ DlgMessage (
   }
 
   R = DlgRun (&D);
+  gModal--;
   FullRedraw ();
   return R;
 }
@@ -534,6 +539,7 @@ DlgInput (
   D.Buttons[1]           = L"Cancel";
   D.ButtonCount          = 2;
   R                      = DlgRun (&D);
+  gModal--;
   if (R == 1) {
     StrCpyS (Buf, BufLen, Tmp);
   }
@@ -567,6 +573,7 @@ DlgReplace (
   D.Buttons[2]        = L"Cancel";
   D.ButtonCount       = 3;
   R                   = DlgRun (&D);
+  gModal--;
   FullRedraw ();
   return (R == 3) ? 0 : R;
 }

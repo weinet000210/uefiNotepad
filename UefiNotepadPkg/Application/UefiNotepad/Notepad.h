@@ -27,6 +27,8 @@
 #include <Protocol/LoadedImage.h>
 #include <Protocol/SimpleFileSystem.h>
 #include <Guid/FileInfo.h>
+#include <Guid/FileSystemInfo.h>
+#include <Protocol/DevicePath.h>
 
 #define NP_VERSION  L"0.1.0"
 #define NP_APPNAME  L"uefiNotepad"
@@ -196,6 +198,31 @@ EFI_STATUS FileSave (CONST CHAR16 *Path, DOC *Doc, UINTN Enc, UINTN Eol);
 BOOLEAN    FileExists (CONST CHAR16 *Path);
 CONST CHAR16 *EncName (UINTN Enc);
 
+typedef struct {
+  CHAR16                           Name[16];     // "FS0:"
+  CHAR16                           Label[40];
+  UINT64                           Size;
+  UINT64                           Free;
+  BOOLEAN                          ReadOnly;
+  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs;
+} VOLUME_INFO;
+
+typedef struct {
+  CHAR16      Name[128];
+  BOOLEAN     Dir;
+  UINT64      Size;
+  EFI_TIME    Modified;
+} DIR_ENTRY;
+
+#define MAX_VOLUMES  32
+
+UINTN      FileListVolumes (VOLUME_INFO *Vols, UINTN Max);
+EFI_STATUS FileListDir (CONST CHAR16 *Dir, DIR_ENTRY **Entries, UINTN *Count);
+VOID       FileCurDir (CHAR16 *Buf, UINTN BufLen);
+
+// FileDlg.c
+BOOLEAN    FileDialog (BOOLEAN Save, CHAR16 *Path, UINTN PathLen, UINTN *Enc);
+
 //
 // ----- Editor (Editor.c / View.c / Dialog.c) -----
 //
@@ -226,6 +253,8 @@ typedef struct {
 #define HIT_HSCROLL     5
 #define HIT_STATUS      6
 #define HIT_TITLE       7
+#define HIT_CLOSE       8
+#define CLOSE_W         46
 
 #define DRAG_NONE       0
 #define DRAG_TEXT       1
@@ -258,6 +287,12 @@ typedef struct {
   UINT64       CaretTick;
   INTN         OpenMenu;         // -1 none
   INTN         MenuHot;          // highlighted item, -1 none
+  INTN         SubOpen;          // item index whose submenu is open, -1 none
+  INTN         SubHot;           // highlighted submenu item, -1 none
+  BOOLEAN      WordWrap;
+  BOOLEAN      Upstream;         // caret at a wrap point shows at the end of the upper row
+  BOOLEAN      WrapDirty;
+  UINTN        WrapCols;
   BOOLEAN      MenuKeyboard;     // menu bar active via keyboard (F10/Alt)
   UINTN        Drag;
   INTN         DragOffset;
@@ -315,13 +350,23 @@ VOID     ViewVScrollGeom (INTN *TrackY, INTN *TrackH, INTN *ThumbY, INTN *ThumbH
 VOID     ViewHScrollGeom (INTN *TrackX, INTN *TrackW, INTN *ThumbX, INTN *ThumbW);
 VOID     ViewScrollTo (INTN Top);
 VOID     ViewScrollLeftTo (INTN Left);
+UINTN    ViewMaxTop (VOID);
+UINTN    ViewRowCount (VOID);
+UINTN    ViewRowOf (POS P);
+VOID     ViewRowGet (UINTN Row, UINTN *Line, UINTN *Start, UINTN *End);
+UINTN    ViewRowVCol (POS P);
+POS      ViewPosFromRowVCol (UINTN Row, UINTN VCol);
+BOOLEAN  ViewRowIsLast (UINTN Row);
 
 // Menu (View.c)
-typedef struct {
-  CONST CHAR16  *Label;     // NULL = separator
-  CONST CHAR16  *Accel;
-  UINTN         Cmd;
-} MENU_ITEM;
+typedef struct _MENU_ITEM MENU_ITEM;
+struct _MENU_ITEM {
+  CONST CHAR16     *Label;     // NULL = separator
+  CONST CHAR16     *Accel;
+  UINTN            Cmd;
+  CONST MENU_ITEM  *Sub;       // non-NULL: opens a submenu
+  UINTN            SubCount;
+};
 
 typedef struct {
   CONST CHAR16     *Title;
@@ -337,7 +382,11 @@ INTN     MenuTitleX (UINTN Index);
 INTN     MenuTitleW (UINTN Index);
 VOID     MenuPopupRect (UINTN Index, INTN *X, INTN *Y, INTN *W, INTN *H);
 INTN     MenuItemAt (UINTN Index, INTN X, INTN Y);
-CONST CHAR16 *MenuItemLabel (CONST MENU_ITEM *Item);
+INTN     MenuItemY (UINTN Index, UINTN Item);
+VOID     SubPopupRect (INTN *X, INTN *Y, INTN *W, INTN *H);
+INTN     SubItemAt (INTN X, INTN Y);
+BOOLEAN  MenuItemEnabled (CONST MENU_ITEM *Item);
+BOOLEAN  ViewCloseHot (INTN X, INTN Y);
 
 // Commands
 enum {
@@ -345,13 +394,30 @@ enum {
   CMD_NEW, CMD_OPEN, CMD_SAVE, CMD_SAVEAS, CMD_EXIT,
   CMD_UNDO, CMD_REDO, CMD_CUT, CMD_COPY, CMD_PASTE, CMD_DELETE,
   CMD_FIND, CMD_FINDNEXT, CMD_REPLACE, CMD_GOTO, CMD_SELECTALL, CMD_TIMEDATE,
-  CMD_ENCODING, CMD_EOL, CMD_STATUSBAR,
+  CMD_ENCODING, CMD_EOL, CMD_STATUSBAR, CMD_WORDWRAP,
+  CMD_ENC_FIRST, CMD_ENC_LAST = CMD_ENC_FIRST + ENC_COUNT - 1,
+  CMD_EOL_CRLF, CMD_EOL_LF,
   CMD_ABOUT, CMD_KEYS
 };
 
 VOID     RunCommand (UINTN Cmd);
 
 // Dialog.c
+#define DLG_FIELD_H   24
+
+typedef struct {
+  CONST CHAR16  *Label;
+  CHAR16        *Buf;
+  UINTN         BufLen;
+  UINTN         Cursor;
+  UINTN         Scroll;
+  BOOLEAN       Numeric;
+  BOOLEAN       AllSel;         // whole text selected; typing replaces it
+} DLG_FIELD;
+
+BOOLEAN  DlgFieldKey (DLG_FIELD *F, INPUT_EVENT *Ev);
+VOID     DlgFieldDraw (DLG_FIELD *F, INTN Fx, INTN Fy, INTN Fw, BOOLEAN Focused);
+extern UINTN  gModal;
 #define DLG_OK      1
 #define DLG_CANCEL  0
 #define DLG_NO      2

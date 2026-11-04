@@ -548,6 +548,26 @@ GfxEraseMouse (
   }
 }
 
+STATIC
+VOID
+PresentWithCursor (
+  INTN  X,
+  INTN  Y,
+  INTN  W,
+  INTN  H
+  );
+
+STATIC
+VOID
+CursorRect (
+  INTN  *X,
+  INTN  *Y
+  )
+{
+  *X = mMouseIBeam ? mMouseX - 5 : mMouseX;
+  *Y = mMouseIBeam ? mMouseY - 9 : mMouseY;
+}
+
 VOID
 GfxDrawMouse (
   INTN     X,
@@ -555,16 +575,113 @@ GfxDrawMouse (
   BOOLEAN  IBeam
   )
 {
+  INTN     X0, Y0, X1, Y1, Nx, Ny, Ox, Oy;
+  BOOLEAN  WasShown;
+
   if (mMouseShown && (X == mMouseX) && (Y == mMouseY) && (IBeam == mMouseIBeam)) {
     return;
   }
 
-  GfxEraseMouse ();
+  WasShown = mMouseShown;
+  CursorRect (&X0, &Y0);
   mMouseX     = X;
   mMouseY     = Y;
   mMouseIBeam = IBeam;
   mMouseShown = TRUE;
-  PaintMouse ();
+  CursorRect (&Nx, &Ny);
+  if (!WasShown) {
+    X0 = Nx;
+    Y0 = Ny;
+  }
+
+  Ox = X0;
+  Oy = Y0;
+
+  //
+  // One blt over the union of the old and new cursor rectangles.
+  //
+  X1 = MAX (X0, Nx) + CUR_W;
+  Y1 = MAX (Y0, Ny) + CUR_H;
+  X0 = MIN (X0, Nx);
+  Y0 = MIN (Y0, Ny);
+  if ((X1 - X0 > 4 * CUR_W) || (Y1 - Y0 > 4 * CUR_H)) {
+    // Big jump: two small blts are cheaper than one large one.
+    BltBack (Ox, Oy, CUR_W, CUR_H);
+    PresentWithCursor (Nx, Ny, CUR_W, CUR_H);
+  } else {
+    PresentWithCursor (X0, Y0, X1 - X0, Y1 - Y0);
+  }
+}
+
+/**
+  Paint the cursor into the back buffer, blt the rectangle, then restore the
+  pixels under the cursor. The screen never shows a frame without the cursor,
+  so it does not flicker on redraws.
+**/
+STATIC
+VOID
+PresentWithCursor (
+  INTN  X,
+  INTN  Y,
+  INTN  W,
+  INTN  H
+  )
+{
+  EFI_GRAPHICS_OUTPUT_BLT_PIXEL  Saved[CUR_W * CUR_H];
+  CONST CHAR8                    **Shape;
+  INTN                           Ox, Oy, R, C, Sx, Sy;
+  EFI_GRAPHICS_OUTPUT_BLT_PIXEL  Black, White;
+  EFI_GRAPHICS_OUTPUT_BLT_PIXEL  *P;
+
+  if (!mMouseShown) {
+    BltBack (X, Y, W, H);
+    return;
+  }
+
+  Shape = mMouseIBeam ? mIBeam : mArrow;
+  Ox    = mMouseIBeam ? mMouseX - 5 : mMouseX;
+  Oy    = mMouseIBeam ? mMouseY - 9 : mMouseY;
+  Black = Px (0x000000);
+  White = Px (0xFFFFFF);
+
+  for (R = 0; R < CUR_H; R++) {
+    for (C = 0; C < CUR_W; C++) {
+      Sx = Ox + C;
+      Sy = Oy + R;
+      if ((Sx < 0) || (Sy < 0) || (Sx >= (INTN)gGfx.Width) || (Sy >= (INTN)gGfx.Height)) {
+        continue;
+      }
+
+      P                  = &gGfx.Back[(UINTN)Sy * gGfx.Width + (UINTN)Sx];
+      Saved[R * CUR_W + C] = *P;
+      if (Shape[R][C] == '#') {
+        *P = mMouseIBeam ? White : Black;
+      } else if (Shape[R][C] == '.') {
+        *P = mMouseIBeam ? Black : White;
+      }
+    }
+  }
+
+  BltBack (X, Y, W, H);
+
+  for (R = 0; R < CUR_H; R++) {
+    for (C = 0; C < CUR_W; C++) {
+      Sx = Ox + C;
+      Sy = Oy + R;
+      if ((Sx < 0) || (Sy < 0) || (Sx >= (INTN)gGfx.Width) || (Sy >= (INTN)gGfx.Height)) {
+        continue;
+      }
+
+      gGfx.Back[(UINTN)Sy * gGfx.Width + (UINTN)Sx] = Saved[R * CUR_W + C];
+    }
+  }
+
+  //
+  // If the cursor lies partly outside the rectangle, refresh it there too.
+  //
+  if ((Ox < X) || (Oy < Y) || (Ox + CUR_W > X + W) || (Oy + CUR_H > Y + H)) {
+    PaintMouse ();
+  }
 }
 
 VOID
@@ -572,10 +689,7 @@ GfxPresent (
   VOID
   )
 {
-  BltBack (0, 0, (INTN)gGfx.Width, (INTN)gGfx.Height);
-  if (mMouseShown) {
-    PaintMouse ();
-  }
+  PresentWithCursor (0, 0, (INTN)gGfx.Width, (INTN)gGfx.Height);
 }
 
 VOID
@@ -586,8 +700,5 @@ GfxPresentRect (
   INTN  H
   )
 {
-  BltBack (X, Y, W, H);
-  if (mMouseShown) {
-    PaintMouse ();
-  }
+  PresentWithCursor (X, Y, W, H);
 }

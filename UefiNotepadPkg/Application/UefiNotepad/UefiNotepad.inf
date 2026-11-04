@@ -23,6 +23,7 @@
   View.c
   Dialog.c
   FileIo.c
+  FileDlg.c
 
 [Packages]
   MdePkg/MdePkg.dec
@@ -47,6 +48,8 @@
   gEfiShellParametersProtocolGuid               ## SOMETIMES_CONSUMES
   gEfiLoadedImageProtocolGuid                   ## SOMETIMES_CONSUMES
   gEfiSimpleFileSystemProtocolGuid              ## SOMETIMES_CONSUMES
+  gEfiDevicePathProtocolGuid                    ## SOMETIMES_CONSUMES
 
 [Guids]
   gEfiFileInfoGuid                              ## SOMETIMES_CONSUMES
+  gEfiFileSystemInfoGuid                        ## SOMETIMES_CONSUMES

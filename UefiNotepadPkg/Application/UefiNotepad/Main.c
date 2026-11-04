@@ -12,9 +12,11 @@
 #define BLINK_TICKS   26     // ~520 ms at 20 ms per tick
 #define WHEEL_LINES   3
 
+UINTN         gModal;
 STATIC UINTN  mLastBlink;
 STATIC UINTN  mHoverKey;     // cheap fingerprint of hover state
 STATIC BOOLEAN mMenuPressed; // mouse went down on a menu title this click
+STATIC BOOLEAN mClosePressed;
 
 VOID
 FullRedraw (
@@ -36,7 +38,7 @@ UpdateMouseCursor (
     return;
   }
 
-  IBeam = (gEd.OpenMenu < 0) && (ViewHitTest (gInput.MouseX, gInput.MouseY) == HIT_TEXT);
+  IBeam = (gModal == 0) && (gEd.OpenMenu < 0) && (ViewHitTest (gInput.MouseX, gInput.MouseY) == HIT_TEXT);
   GfxDrawMouse (gInput.MouseX, gInput.MouseY, IBeam);
 }
 
@@ -66,9 +68,11 @@ DoSaveAs (
   CHAR16      Path[MAX_PATH];
   EFI_STATUS  Status;
   CHAR16      Msg[MAX_PATH + 64];
+  UINTN       Enc;
 
   StrCpyS (Path, MAX_PATH, gEd.Path);
-  if (!DlgInput (L"Save As", L"File name:", Path, MAX_PATH) || (Path[0] == 0)) {
+  Enc = gEd.Enc;
+  if (!FileDialog (TRUE, Path, MAX_PATH, &Enc) || (Path[0] == 0)) {
     return FALSE;
   }
 
@@ -79,12 +83,13 @@ DoSaveAs (
     }
   }
 
-  Status = FileSave (Path, &gEd.Doc, gEd.Enc, gEd.Eol);
+  Status = FileSave (Path, &gEd.Doc, Enc, gEd.Eol);
   if (EFI_ERROR (Status)) {
     ShowError (L"Cannot save file:", Path, Status);
     return FALSE;
   }
 
+  gEd.Enc = Enc;
   StrCpyS (gEd.Path, MAX_PATH, Path);
   gEd.Modified = FALSE;
   EdSetMessage (L"Saved.");
@@ -158,6 +163,7 @@ ResetView (
   gEd.LeftCol = 0;
   gEd.Modified     = FALSE;
   gEd.MaxColsDirty = TRUE;
+  gEd.WrapDirty    = TRUE;
   EdClearUndo ();
   EdMoveCursor (Zero, FALSE);
 }
@@ -212,13 +218,15 @@ DoOpen (
   )
 {
   CHAR16  Path[MAX_PATH];
+  UINTN   Enc;
 
   if (!ConfirmDiscard ()) {
     return;
   }
 
-  Path[0] = 0;
-  if (!DlgInput (L"Open", L"File name:", Path, MAX_PATH) || (Path[0] == 0)) {
+  StrCpyS (Path, MAX_PATH, gEd.Path);
+  Enc = gEd.Enc;
+  if (!FileDialog (FALSE, Path, MAX_PATH, &Enc) || (Path[0] == 0)) {
     return;
   }
 
@@ -360,8 +368,19 @@ RunCommand (
 {
   gEd.OpenMenu     = -1;
   gEd.MenuHot      = -1;
+  gEd.SubOpen      = -1;
+  gEd.SubHot       = -1;
   gEd.MenuKeyboard = FALSE;
   FullRedraw ();
+
+  if ((Cmd >= CMD_ENC_FIRST) && (Cmd <= CMD_ENC_LAST)) {
+    if (gEd.Enc != Cmd - CMD_ENC_FIRST) {
+      gEd.Enc      = Cmd - CMD_ENC_FIRST;
+      gEd.Modified = TRUE;
+    }
+
+    return;
+  }
 
   switch (Cmd) {
     case CMD_NEW:       DoNew ();
@@ -402,13 +421,21 @@ RunCommand (
       break;
     case CMD_GOTO:      DoGoto ();
       break;
-    case CMD_ENCODING:
-      gEd.Enc      = (gEd.Enc + 1) % ENC_COUNT;
-      gEd.Modified = TRUE;
+    case CMD_EOL_CRLF:
+    case CMD_EOL_LF:
+      if (gEd.Eol != ((Cmd == CMD_EOL_CRLF) ? EOL_CRLF : EOL_LF)) {
+        gEd.Eol      = (Cmd == CMD_EOL_CRLF) ? EOL_CRLF : EOL_LF;
+        gEd.Modified = TRUE;
+      }
+
       break;
-    case CMD_EOL:
-      gEd.Eol      = (gEd.Eol == EOL_CRLF) ? EOL_LF : EOL_CRLF;
-      gEd.Modified = TRUE;
+    case CMD_WORDWRAP:
+      gEd.WordWrap  = !gEd.WordWrap;
+      gEd.WrapDirty = TRUE;
+      gEd.LeftCol   = 0;
+      ViewLayout ();
+      EdEnsureVisible ();
+      ViewScrollTo ((INTN)gEd.TopLine);
       break;
     case CMD_STATUSBAR:
       gEd.ShowStatus = !gEd.ShowStatus;
@@ -470,6 +497,8 @@ OpenMenu (
   )
 {
   gEd.OpenMenu     = Index;
+  gEd.SubOpen      = -1;
+  gEd.SubHot       = -1;
   gEd.MenuKeyboard = Keyboard;
   gEd.MenuHot      = Keyboard ? FirstEnabled ((UINTN)Index, -1, 1) : -1;
 }
@@ -482,6 +511,8 @@ CloseMenu (
 {
   gEd.OpenMenu     = -1;
   gEd.MenuHot      = -1;
+  gEd.SubOpen      = -1;
+  gEd.SubHot       = -1;
   gEd.MenuKeyboard = FALSE;
 }
 
@@ -495,6 +526,49 @@ MenuKey (
   UINTN       I;
 
   M = &gMenus[gEd.OpenMenu];
+
+  //
+  // Submenu open: it takes the arrows and Enter.
+  //
+  if (gEd.SubOpen >= 0) {
+    CONST MENU_ITEM  *Par;
+
+    Par = &M->Items[gEd.SubOpen];
+    if ((Ev->Scan == SCAN_ESC) || (Ev->Scan == SCAN_LEFT)) {
+      gEd.SubOpen = -1;
+      gEd.SubHot  = -1;
+      return;
+    }
+
+    if (Ev->Scan == SCAN_UP) {
+      gEd.SubHot = (gEd.SubHot <= 0) ? (INTN)Par->SubCount - 1 : gEd.SubHot - 1;
+      return;
+    }
+
+    if (Ev->Scan == SCAN_DOWN) {
+      gEd.SubHot = (gEd.SubHot + 1) % (INTN)Par->SubCount;
+      return;
+    }
+
+    if (((Ev->Char == CHAR_CARRIAGE_RETURN) || (Ev->Char == CHAR_LINEFEED) || (Ev->Char == L' ')) &&
+        (gEd.SubHot >= 0))
+    {
+      RunCommand (Par->Sub[gEd.SubHot].Cmd);
+      return;
+    }
+
+    if (Ev->Scan != SCAN_RIGHT) {
+      return;
+    }
+  } else if ((gEd.MenuHot >= 0) && (M->Items[gEd.MenuHot].Sub != NULL) &&
+             ((Ev->Scan == SCAN_RIGHT) || (Ev->Char == CHAR_CARRIAGE_RETURN) ||
+              (Ev->Char == CHAR_LINEFEED) || (Ev->Char == L' ')))
+  {
+    gEd.SubOpen = gEd.MenuHot;
+    gEd.SubHot  = 0;
+    return;
+  }
+
   switch (Ev->Scan) {
     case SCAN_ESC:
     case SCAN_F10:
@@ -517,7 +591,7 @@ MenuKey (
   }
 
   if ((Ev->Char == CHAR_CARRIAGE_RETURN) || (Ev->Char == CHAR_LINEFEED) || (Ev->Char == L' ')) {
-    if (gEd.MenuHot >= 0) {
+    if ((gEd.MenuHot >= 0) && MenuItemEnabled (&M->Items[gEd.MenuHot])) {
       RunCommand (M->Items[gEd.MenuHot].Cmd);
     }
 
@@ -543,7 +617,14 @@ MenuKey (
 
     for (I = 0; I < M->Count; I++) {
       if ((M->Items[I].Label != NULL) && ((M->Items[I].Label[0] | 0x20) == C)) {
-        RunCommand (M->Items[I].Cmd);
+        if (M->Items[I].Sub != NULL) {
+          gEd.MenuHot = (INTN)I;
+          gEd.SubOpen = (INTN)I;
+          gEd.SubHot  = 0;
+        } else {
+          RunCommand (M->Items[I].Cmd);
+        }
+
         return;
       }
     }
@@ -628,6 +709,8 @@ EditorKey (
     case SCAN_F5:        EdInsertTimeDate ();
       return;
     case SCAN_F10:       OpenMenu (0, TRUE);
+      return;
+    case SCAN_F12:       RunCommand (CMD_SAVEAS);   // Ctrl+Shift+S fallback for consoles that drop Shift
       return;
     case SCAN_ESC:
       EdMoveCursor (gEd.Cursor, FALSE);
@@ -753,7 +836,7 @@ ThumbDrag (
   if (gEd.Drag == DRAG_VTHUMB) {
     ViewVScrollGeom (&Ty, &Th, &Hy, &Hh);
     Range = Th - Hh;
-    Max   = (gEd.Doc.Count > gEd.Rows) ? gEd.Doc.Count - gEd.Rows : 0;
+    Max   = ViewMaxTop ();
     if (Range > 0) {
       ViewScrollTo ((Y - gEd.DragOffset - Ty) * (INTN)Max / Range);
     }
@@ -794,7 +877,7 @@ TextDrag (
 
   ViewMouseToPos (X, MIN (MAX (Y, gEd.TextY), gEd.TextY + gEd.TextH - 1), &P);
   gEd.Cursor        = P;
-  gEd.PreferredVCol = EdVisCol (P.Line, P.Col);
+  gEd.PreferredVCol = ViewRowVCol (P);
   gEd.CaretOn       = TRUE;
 }
 
@@ -849,11 +932,39 @@ HandleMouse (
   // Open popup menu: hover, click, release.
   //
   if (gEd.OpenMenu >= 0) {
+    INTN  Sub;
+
     Title = MenuTitleAt (Ev->X, Ev->Y);
+    Sub   = SubItemAt (Ev->X, Ev->Y);
     Item  = MenuItemAt ((UINTN)gEd.OpenMenu, Ev->X, Ev->Y);
+
+    if (Sub >= -1) {
+      //
+      // Inside the submenu.
+      //
+      gEd.SubHot = Sub;
+      if ((Ev->Released & MB_LEFT) && (Sub >= 0)) {
+        mMenuPressed = FALSE;
+        RunCommand (gMenus[gEd.OpenMenu].Items[gEd.SubOpen].Sub[Sub].Cmd);
+      }
+
+      return;
+    }
+
     if (Item >= -1) {
       gEd.MenuHot = Item;
-    } else if (!gEd.MenuKeyboard) {
+      if (Item >= 0) {
+        if (gMenus[gEd.OpenMenu].Items[Item].Sub != NULL) {
+          if (gEd.SubOpen != Item) {
+            gEd.SubOpen = Item;
+            gEd.SubHot  = -1;
+          }
+        } else {
+          gEd.SubOpen = -1;
+          gEd.SubHot  = -1;
+        }
+      }
+    } else if (!gEd.MenuKeyboard && (gEd.SubOpen < 0)) {
       gEd.MenuHot = -1;
     }
 
@@ -878,7 +989,9 @@ HandleMouse (
       }
     }
 
-    if ((Ev->Released & MB_LEFT) && (Item >= 0)) {
+    if ((Ev->Released & MB_LEFT) && (Item >= 0) &&
+        (gMenus[gEd.OpenMenu].Items[Item].Sub == NULL))
+    {
       mMenuPressed = FALSE;
       RunCommand (gMenus[gEd.OpenMenu].Items[Item].Cmd);
       return;
@@ -891,9 +1004,20 @@ HandleMouse (
     return;
   }
 
+  if ((Ev->Released & MB_LEFT) && mClosePressed) {
+    mClosePressed = FALSE;
+    if (Hit == HIT_CLOSE) {
+      RunCommand (CMD_EXIT);
+      return;
+    }
+  }
+
   if (Ev->Pressed & MB_LEFT) {
     gEd.Message[0] = 0;
     switch (Hit) {
+      case HIT_CLOSE:
+        mClosePressed = TRUE;
+        return;
       case HIT_MENUBAR:
         Title = MenuTitleAt (Ev->X, Ev->Y);
         if (Title >= 0) {
@@ -958,6 +1082,9 @@ HoverKey (
   Part = 0;
   if (Hit == HIT_MENUBAR) {
     Part = (UINTN)(MenuTitleAt (gInput.MouseX, gInput.MouseY) + 2);
+  } else if ((Hit == HIT_TEXT) && (gEd.OpenMenu >= 0)) {
+    Part = (UINTN)(MenuItemAt ((UINTN)gEd.OpenMenu, gInput.MouseX, gInput.MouseY) + 3) * 64 +
+           (UINTN)(SubItemAt (gInput.MouseX, gInput.MouseY) + 3);
   } else if (Hit == HIT_VSCROLL) {
     ViewVScrollGeom (&Ty, &Th, &Hy, &Hh);
     Part = (gInput.MouseY < Ty) ? 1 : (gInput.MouseY >= Ty + Th) ? 2 :
@@ -1013,18 +1140,22 @@ MainLoop (
       case EV_MOUSE:
         {
           UINTN  OldTop, OldLeft, OldMenu, OldHot;
+          INTN   OldSub, OldSubHot;
           POS    OldCur, OldAnc;
 
           OldTop  = gEd.TopLine;
           OldLeft = gEd.LeftCol;
           OldMenu = (UINTN)gEd.OpenMenu;
           OldHot  = (UINTN)gEd.MenuHot;
+          OldSub    = gEd.SubOpen;
+          OldSubHot = gEd.SubHot;
           OldCur  = gEd.Cursor;
           OldAnc  = gEd.Anchor;
           HandleMouse (&Ev);
           Hk = HoverKey ();
           if ((OldTop != gEd.TopLine) || (OldLeft != gEd.LeftCol) ||
               (OldMenu != (UINTN)gEd.OpenMenu) || (OldHot != (UINTN)gEd.MenuHot) ||
+              (OldSub != gEd.SubOpen) || (OldSubHot != gEd.SubHot) ||
               (PosCmp (OldCur, gEd.Cursor) != 0) || (PosCmp (OldAnc, gEd.Anchor) != 0) ||
               (Hk != mHoverKey) || (Ev.Pressed != 0) || (Ev.Released != 0))
           {

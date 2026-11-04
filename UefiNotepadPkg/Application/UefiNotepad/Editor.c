@@ -118,6 +118,7 @@ Touched (
 {
   gEd.Modified     = TRUE;
   gEd.MaxColsDirty = TRUE;
+  gEd.WrapDirty    = TRUE;
 }
 
 /**
@@ -223,6 +224,10 @@ EdInit (
   gEd.MenuHot      = -1;
   gEd.Group        = 1;
   gEd.MaxColsDirty = TRUE;
+  gEd.WrapDirty    = TRUE;
+  gEd.WordWrap     = TRUE;
+  gEd.SubOpen      = -1;
+  gEd.SubHot       = -1;
   gEd.CaretOn      = TRUE;
 }
 
@@ -323,16 +328,22 @@ EdEnsureVisible (
   VOID
   )
 {
-  UINTN  V;
+  UINTN  V, Row;
 
   if (gEd.Rows == 0) {
     return;
   }
 
-  if (gEd.Cursor.Line < gEd.TopLine) {
-    gEd.TopLine = gEd.Cursor.Line;
-  } else if (gEd.Cursor.Line >= gEd.TopLine + gEd.Rows) {
-    gEd.TopLine = gEd.Cursor.Line - gEd.Rows + 1;
+  Row = ViewRowOf (gEd.Cursor);
+  if (Row < gEd.TopLine) {
+    gEd.TopLine = Row;
+  } else if (Row >= gEd.TopLine + gEd.Rows) {
+    gEd.TopLine = Row - gEd.Rows + 1;
+  }
+
+  if (gEd.WordWrap) {
+    gEd.LeftCol = 0;
+    return;
   }
 
   V = EdVisCol (gEd.Cursor.Line, gEd.Cursor.Col);
@@ -357,12 +368,13 @@ EdMoveCursor (
     P.Col = gEd.Doc.Lines[P.Line].Len;
   }
 
-  gEd.Cursor = P;
+  gEd.Cursor   = P;
+  gEd.Upstream = FALSE;
   if (!Extend) {
     gEd.Anchor = P;
   }
 
-  gEd.PreferredVCol = EdVisCol (P.Line, P.Col);
+  gEd.PreferredVCol = ViewRowVCol (P);
   gEd.CanCoalesce   = FALSE;
   gEd.CaretOn       = TRUE;
   gEd.CaretTick     = gInput.Ticks;
@@ -481,23 +493,21 @@ EdMoveUpDown (
   BOOLEAN  Extend
   )
 {
-  INTN   Line;
+  INTN   Row, N;
   UINTN  Pref;
-  POS    P;
 
   Pref = gEd.PreferredVCol;
-  Line = (INTN)gEd.Cursor.Line + Delta;
-  if (Line < 0) {
-    Line = 0;
+  N    = (INTN)ViewRowCount ();
+  Row  = (INTN)ViewRowOf (gEd.Cursor) + Delta;
+  if (Row < 0) {
+    Row = 0;
   }
 
-  if (Line >= (INTN)gEd.Doc.Count) {
-    Line = (INTN)gEd.Doc.Count - 1;
+  if (Row >= N) {
+    Row = N - 1;
   }
 
-  P.Line = (UINTN)Line;
-  P.Col  = EdColFromVis (P.Line, Pref);
-  EdMoveCursor (P, Extend);
+  EdMoveCursor (ViewPosFromRowVCol ((UINTN)Row, Pref), Extend);
   gEd.PreferredVCol = Pref;
 }
 
@@ -514,6 +524,18 @@ EdHome (
   if (Doc) {
     EdMoveCursor (MkPos (0, 0), Extend);
     return;
+  }
+
+  if (gEd.WordWrap) {
+    UINTN  Ln, St, En;
+
+    ViewRowGet (ViewRowOf (gEd.Cursor), &Ln, &St, &En);
+    if (St > 0) {
+      P     = gEd.Cursor;
+      P.Col = St;
+      EdMoveCursor (P, Extend);
+      return;
+    }
   }
 
   //
@@ -545,6 +567,20 @@ EdEnd (
 
   P     = gEd.Cursor;
   P.Col = CurLine ()->Len;
+  if (gEd.WordWrap) {
+    UINTN  Row, Ln, St, En;
+
+    Row = ViewRowOf (gEd.Cursor);
+    if (!ViewRowIsLast (Row)) {
+      ViewRowGet (Row, &Ln, &St, &En);
+      P.Col = En;
+      EdMoveCursor (P, Extend);
+      gEd.Upstream      = TRUE;
+      gEd.PreferredVCol = ViewRowVCol (P);
+      return;
+    }
+  }
+
   EdMoveCursor (P, Extend);
 }
 
@@ -589,7 +625,7 @@ EdSelectWord (
 
   gEd.Anchor = MkPos (P.Line, S);
   gEd.Cursor = MkPos (P.Line, E);
-  gEd.PreferredVCol = EdVisCol (P.Line, E);
+  gEd.PreferredVCol = ViewRowVCol (gEd.Cursor);
 }
 
 //
@@ -626,10 +662,11 @@ EdInsertText (
     EdDeleteSel ();
   }
 
-  End        = RecInsert (gEd.Cursor, Str, Len);
-  gEd.Cursor = End;
-  gEd.Anchor = End;
-  gEd.PreferredVCol = EdVisCol (End.Line, End.Col);
+  End          = RecInsert (gEd.Cursor, Str, Len);
+  gEd.Cursor   = End;
+  gEd.Anchor   = End;
+  gEd.Upstream = (Len > 0) && (Str[Len - 1] != L'\n');
+  gEd.PreferredVCol = ViewRowVCol (End);
   gEd.CaretOn       = TRUE;
   gEd.CaretTick     = gInput.Ticks;
   EdEnsureVisible ();
@@ -857,7 +894,10 @@ EdGotoLine (
 
   EdMoveCursor (MkPos (Line - 1, 0), FALSE);
   if (gEd.Rows > 0) {
-    gEd.TopLine = (Line - 1 > gEd.Rows / 2) ? Line - 1 - gEd.Rows / 2 : 0;
+    UINTN  Row;
+
+    Row = ViewRowOf (gEd.Cursor);
+    ViewScrollTo ((Row > gEd.Rows / 2) ? (INTN)(Row - gEd.Rows / 2) : 0);
   }
 }
 
@@ -934,7 +974,7 @@ EdFindNext (
     if (Col >= 0) {
       gEd.Anchor = MkPos (Line, (UINTN)Col);
       gEd.Cursor = MkPos (Line, (UINTN)Col + NLen);
-      gEd.PreferredVCol = EdVisCol (Line, gEd.Cursor.Col);
+      gEd.PreferredVCol = ViewRowVCol (gEd.Cursor);
       EdEnsureVisible ();
       return TRUE;
     }

@@ -8,8 +8,12 @@ external libraries) and works with keyboard and mouse.
 
 ## Features
 
-- Title bar, menu bar (File, Edit, Search, Format, View, Help), status bar,
-  vertical and horizontal scroll bars, modal dialogs
+- Title bar with a close button, menu bar (File, Edit, Search, Format, View,
+  Help) with drop-down submenus, status bar, scroll bars, modal dialogs
+- Open / Save As file browser: every mounted file system (FS0:, FS1:, ...)
+  with volume label and free space on the left, folders and files on the
+  right, Up button, keyboard and mouse navigation; Save As picks the encoding
+- Word wrap (View > Word Wrap, on by default)
 - Mouse: click to place the caret, drag to select (auto-scrolls), double-click
   selects a word, Shift+click extends, scroll bar arrows / track / thumb drag,
   wheel (when the mouse driver reports one); everything also works keyboard-only
@@ -22,8 +26,11 @@ external libraries) and works with keyboard and mouse.
 - Encodings: UTF-8, UTF-8 with BOM, UTF-16 LE/BE (BOM), ANSI (Latin-1);
   detected on open and kept on save. Line endings CRLF or LF, detected and kept.
 - English UI, 8x19 bitmap font from edk2 (ASCII and box drawing)
+- Flicker-free software mouse cursor (composited before each screen update)
 
 ![menus](docs/menu.png)
+
+![open dialog](docs/open.png)
 
 ## Usage
 
@@ -37,7 +44,7 @@ does not exist yet is created on the first save.
 
 | Keys | Action |
 |---|---|
-| Ctrl+N / Ctrl+O / Ctrl+S / Ctrl+Shift+S | New / Open / Save / Save As |
+| Ctrl+N / Ctrl+O / Ctrl+S / F12 (or Ctrl+Shift+S) | New / Open / Save / Save As |
 | Ctrl+Q | Exit |
 | Ctrl+Z / Ctrl+Y | Undo / Redo |
 | Ctrl+X / Ctrl+C / Ctrl+V, Shift+Del / Ctrl+Ins / Shift+Ins | Cut / Copy / Paste |
@@ -46,6 +53,13 @@ does not exist yet is created on the first save.
 | F5 | Insert time and date |
 | F10 or Alt+letter | Open a menu (arrows move, Enter chooses, Esc closes) |
 | F1 | Keyboard shortcuts |
+
+## File systems
+
+The browser lists every `EFI_SIMPLE_FILE_SYSTEM_PROTOCOL` volume, named with
+the Shell's map names. UEFI firmware reads FAT12/16/32 natively; other file
+systems (NTFS, ext4, ...) show up once a driver such as
+[efifs](https://efi.akeo.ie/) is loaded.
 
 ## Mouse support
 
@@ -89,6 +103,7 @@ UefiNotepadPkg/
     Editor.c   cursor, selection, clipboard, undo/redo, find/replace
     View.c     layout, rendering, menus, scroll bars, hit testing
     Dialog.c   message box, input box, Replace dialog
+    FileDlg.c  Open / Save As file browser
     FileIo.c   load/save via the Shell protocol or the boot file system
 ```
 
